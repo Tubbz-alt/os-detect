@@ -10,7 +10,7 @@ categories = ["filesystem", "os"]
 keywords = ["detect", "probe", "os"]
 
 [dependencies]
-os-release = { git = "https://github.com/pop-os/os-release" }
+os-release = "0.1.0"
 partition-identity = "0.1.2"
 sys-mount = "1.0.3"
 tempdir = "0.3.7"
