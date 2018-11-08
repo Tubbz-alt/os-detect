@@ -2,10 +2,10 @@
 //!
 //! ```rust,no_run
 //! extern crate os_detect;
-//! 
+//!
 //! use os_detect::detect_os_from_device;
 //! use std::path::Path;
-//! 
+//!
 //! pub fn main() {
 //!     let device_path = &Path::new("/dev/sda3");
 //!     let fs = "ext4";
@@ -27,6 +27,7 @@ use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 use tempdir::TempDir;
 use os_release::OsRelease;
+use std::path::PathBuf;
 use partition_identity::PartitionID;
 use sys_mount::*;
 
@@ -36,9 +37,8 @@ pub enum OS {
     Windows(String),
     Linux {
         info: OsRelease,
-        efi: Option<String>,
-        home: Option<String>,
-        recovery: Option<String>
+        partitions: Vec<PartitionID>,
+        targets: Vec<PathBuf>,
     },
     MacOs(String)
 }
@@ -73,14 +73,9 @@ pub fn detect_os_from_path(base: &Path) -> Option<OS> {
 pub fn detect_linux(base: &Path) -> Option<OS> {
     let path = base.join("etc/os-release");
     if path.exists() {
-        if let Ok(os_release) = OsRelease::new_from(path) {
-            let (home, efi, recovery) = find_linux_parts(base);
-            return Some(OS::Linux {
-                info: os_release,
-                home,
-                efi,
-                recovery,
-            });
+        if let Ok(info) = OsRelease::new_from(path) {
+            let (partitions, targets) = find_linux_parts(base);
+            return Some(OS::Linux { info, partitions, targets });
         }
     }
 
@@ -106,30 +101,15 @@ pub fn detect_windows(base: &Path) -> Option<OS> {
         .map(|| OS::Windows("Windows".into()))
 }
 
-fn find_linux_parts(base: &Path) -> (Option<String>, Option<String>, Option<String>) {
-    let parse_fstab_mount = move |mount: &str| -> Option<String> {
-        if mount.starts_with('/') {
-            PartitionID::get_uuid(mount.to_owned())
-                .map(|id| id.id)
-        } else if mount.starts_with("UUID") {
-            let (_, uuid) = mount.split_at(5);
-            Some(uuid.into())
-        } else {
-            error!("unsupported mount type: {}", mount);
-            None
-        }
-    };
-
-    let mut home = None;
-    let mut efi = None;
-    let mut recovery = None;
+fn find_linux_parts(base: &Path) -> (Vec<PartitionID>, Vec<PathBuf>) {
+    let mut partitions = Vec::new();
+    let mut targets = Vec::new();
 
     if let Ok(fstab) = open(base.join("etc/fstab")) {
         for entry in BufReader::new(fstab).lines() {
             if let Ok(entry) = entry {
                 let entry = entry.trim();
-
-                if entry.starts_with('#') {
+                if entry.starts_with('#') || entry.is_empty() {
                     continue;
                 }
 
@@ -138,25 +118,16 @@ fn find_linux_parts(base: &Path) -> (Option<String>, Option<String>, Option<Stri
                 let target = fields.next();
 
                 if let Some(target) = target {
-                    if home.is_none() && target == "/home" {
-                        if let Some(path) = parse_fstab_mount(source.unwrap()) {
-                            home = Some(path);
-                        }
-                    } else if efi.is_none() && target == "/boot/efi" {
-                        if let Some(path) = parse_fstab_mount(source.unwrap()) {
-                            efi = Some(path);
-                        }
-                    } else if recovery.is_none() && target == "/recovery" {
-                        if let Some(path) = parse_fstab_mount(source.unwrap()) {
-                            recovery = Some(path);
-                        }
+                    if let Some(Ok(path)) = source.map(|s| s.parse::<PartitionID>()) {
+                        partitions.push(path);
+                        targets.push(PathBuf::from(String::from(target)));
                     }
                 }
             }
         }
     }
 
-    (home, efi, recovery)
+    (partitions, targets)
 }
 
 fn parse_plist<R: BufRead>(file: R) -> Option<String> {
